@@ -207,13 +207,13 @@
   const caption = $('caption'), missesEl = $('misses'), hintEl = $('hint');
   const panel = document.querySelector('.panel');
 
-  let running = false, startTime = 0, elapsed = 0, misses = 0, rafId = null;
+  let running = false, startTime = 0, elapsed = 0, rafId = null;
   // The space bar trick works once per visit. After that it is "patched".
   let spaceUsed = false, patchedSeen = false, patchLine = 0;
   // Per run: the button tires as misses and running time add up, then gives up.
   let runStart = 0, runMisses = 0, mood = 'fresh';   // fresh | tired | exhausted
   let lastHuff = 0, justCaught = 0, stoppedBy = '';
-  const TIRED_AT = 0.55;
+  const GIVE_UP_MISSES = 12, GIVE_UP_MS = 20000, TIRED_AT = 0.5;   // tired at half of either
 
   const pad = n => String(n).padStart(2, '0');
   const digits = str => [...str].map(ch => ch === ':' ? '<span class="c">:</span>' : `<span class="d">${ch}</span>`).join('');
@@ -234,8 +234,8 @@
   }
 
   /* ---------- Tiredness ---------- */
-  // 0 when fresh, 1 when it gives up: 25 misses or 45 seconds of running, whichever comes first
-  const tiredness = () => Math.max(runMisses / 25, (performance.now() - runStart) / 45000);
+  // 0 when fresh, 1 when it gives up: 12 misses or 20 seconds of running this round, whichever comes first
+  const tiredness = () => Math.max(runMisses / GIVE_UP_MISSES, (performance.now() - runStart) / GIVE_UP_MS);
   const baseMood = () => { const t = tiredness(); return t >= 1 ? 'exhausted' : t >= TIRED_AT ? 'tired' : 'fresh'; };
 
   function setMood(m) {
@@ -267,7 +267,7 @@
       ? (patchedSeen ? 'New rule: you have to catch it.' : 'Catch the STOP button!')
       : (elapsed ? ({ key: 'Stopped. Sneaky.', tired: 'It gave up. You win.' }[stoppedBy] || 'Stopped.')
                  : 'Press START. Then just try to stop it.');
-    missesEl.innerHTML = misses ? `Missed <b>${misses}</b> ${misses === 1 ? 'time' : 'times'}` : '';
+    missesEl.innerHTML = runMisses ? `Missed <b>${runMisses}</b> ${runMisses === 1 ? 'time' : 'times'}` : '';
     let hint = '';
     if (running) {
       if (mood === 'exhausted') hint = 'Click it. It won’t run anymore.';
@@ -338,7 +338,6 @@
     bubble(r.left + 20, r.top + 4, text, win);
   }
   function miss(x, y) {
-    misses++;
     runMisses++;
     let t;
     do { t = TAUNTS[Math.floor(Math.random() * TAUNTS.length)]; } while (t === lastTaunt);
@@ -371,7 +370,7 @@
   }
   function reset() {
     if (running) return;
-    elapsed = 0; misses = 0;
+    elapsed = 0; runMisses = 0;
     render();
     renderStatus();
     goHome();
