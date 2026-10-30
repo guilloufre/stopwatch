@@ -107,7 +107,12 @@
     transition: left .22s cubic-bezier(.2, .9, .3, 1.2), top .22s cubic-bezier(.2, .9, .3, 1.2), background-color .15s;
   }
   #go.running { background: var(--red); color: var(--white); }
+  /* tired: slower jumps and heavy breathing */
+  #go.tired { transition-duration: .6s, .6s, .15s; animation: pant 0.9s ease-in-out infinite; }
+  /* gave up: drooping, greyed out, no longer running */
+  #go.exhausted { background: #bdb5a8; color: var(--ink); transform: rotate(7deg) translateY(6px); box-shadow: 3px 3px 0 var(--ink); }
   #go.whoosh { animation: squash .28s ease-out; }
+  @keyframes pant { 50% { transform: scale(1.04, 0.95); } }
   @keyframes squash {
     0% { transform: scale(1.25, 0.75) rotate(-6deg); }
     60% { transform: scale(0.92, 1.08) rotate(3deg); }
@@ -170,7 +175,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     #go { transition: none; }
-    #go.whoosh { animation: none; }
+    #go.whoosh, #go.tired { animation: none; }
     .bubble { animation-name: fade; }
     @keyframes fade { 0%, 75% { opacity: 1; transform: rotate(var(--tilt)); } 100% { opacity: 0; transform: rotate(var(--tilt)); } }
   }
@@ -203,6 +208,12 @@
   const panel = document.querySelector('.panel');
 
   let running = false, startTime = 0, elapsed = 0, misses = 0, rafId = null;
+  // The space bar trick works once per visit. After that it is "patched".
+  let spaceUsed = false, patchedSeen = false, patchLine = 0;
+  // Per run: the button tires as misses and running time add up, then gives up.
+  let runStart = 0, runMisses = 0, mood = 'fresh';   // fresh | tired | exhausted
+  let lastHuff = 0, justCaught = 0, stoppedBy = '';
+  const TIRED_AT = 0.55;
 
   const pad = n => String(n).padStart(2, '0');
   const digits = str => [...str].map(ch => ch === ':' ? '<span class="c">:</span>' : `<span class="d">${ch}</span>`).join('');
@@ -215,15 +226,56 @@
     mainTimeEl.classList.toggle('long', h > 0);
     csEl.innerHTML = digits(pad(totalCs % 100));
   }
-  function tick() { render(); if (running) rafId = requestAnimationFrame(tick); }
+  function tick() {
+    render();
+    if (!running) return;
+    updateTiredness();
+    rafId = requestAnimationFrame(tick);
+  }
+
+  /* ---------- Tiredness ---------- */
+  // 0 when fresh, 1 when it gives up: 25 misses or 45 seconds of running, whichever comes first
+  const tiredness = () => Math.max(runMisses / 25, (performance.now() - runStart) / 45000);
+  const baseMood = () => { const t = tiredness(); return t >= 1 ? 'exhausted' : t >= TIRED_AT ? 'tired' : 'fresh'; };
+
+  function setMood(m) {
+    if (mood === m) return;
+    mood = m;
+    for (const c of ['tired', 'exhausted']) go.classList.toggle(c, m === c);
+    renderStatus();
+  }
+
+  function updateTiredness() {
+    if (mood === 'exhausted') return;
+    const next = baseMood();
+    if (next === 'exhausted') {
+      setMood('exhausted');
+      bubbleAtButton('I… can’t… run… anymore…');
+    } else if (next === 'tired') {
+      setMood('tired');
+      if (performance.now() - lastHuff > 3500) { lastHuff = performance.now(); bubbleAtButton('huff… huff…'); }
+    }
+  }
 
   function renderStatus() {
-    go.textContent = running ? 'STOP' : (elapsed ? 'GO ON' : 'START');
+    go.textContent = running
+      ? (mood === 'exhausted' ? 'I GIVE UP' : 'STOP')
+      : (elapsed ? 'GO ON' : 'START');
     go.classList.toggle('running', running);
     resetBtn.hidden = running || elapsed === 0;
-    caption.textContent = running ? 'Catch the STOP button!' : (elapsed ? 'Stopped. Sneaky.' : 'Press START. Then just try to stop it.');
+    caption.textContent = running
+      ? (patchedSeen ? 'New rule: you have to catch it.' : 'Catch the STOP button!')
+      : (elapsed ? ({ key: 'Stopped. Sneaky.', tired: 'It gave up. You win.' }[stoppedBy] || 'Stopped.')
+                 : 'Press START. Then just try to stop it.');
     missesEl.innerHTML = misses ? `Missed <b>${misses}</b> ${misses === 1 ? 'time' : 'times'}` : '';
-    hintEl.textContent = running && misses >= 5 ? 'Psst… the space bar is faster than any mouse.' : '';
+    let hint = '';
+    if (running) {
+      if (mood === 'exhausted') hint = 'Click it. It won’t run anymore.';
+      else if (mood === 'tired') hint = 'It’s getting tired…';
+      else if (!spaceUsed && runMisses >= 5) hint = 'Psst… the space bar is faster than any mouse.';
+      else if (patchedSeen && runMisses >= 5) hint = 'Psst… keep chasing. It can’t run forever.';
+    }
+    hintEl.textContent = hint;
   }
 
   /* ---------- Button placement ---------- */
@@ -233,8 +285,15 @@
     place(r.left, r.top);
   }
 
+  function whoosh() {
+    go.classList.remove('whoosh');
+    void go.offsetWidth;
+    go.classList.add('whoosh');
+  }
+
   // Jump somewhere far from the pointer, never on top of the time panel
   function flee(px, py) {
+    if (mood === 'exhausted') return;
     const bw = go.offsetWidth, bh = go.offsetHeight;
     const minX = 16, maxX = innerWidth - 16 - bw, minY = 16, maxY = innerHeight - 16 - bh;
     const p = panel.getBoundingClientRect();
@@ -251,9 +310,7 @@
     }
     if (!best) best = [minX + Math.random() * (maxX - minX), maxY];
     place(best[0], best[1]);
-    go.classList.remove('whoosh');
-    void go.offsetWidth;
-    go.classList.add('whoosh');
+    whoosh();
   }
 
   /* ---------- Bubbles ---------- */
@@ -276,8 +333,13 @@
     b.style.top = top + 'px';
     b.addEventListener('animationend', () => b.remove());
   }
+  function bubbleAtButton(text, win) {
+    const r = go.getBoundingClientRect();
+    bubble(r.left + 20, r.top + 4, text, win);
+  }
   function miss(x, y) {
     misses++;
+    runMisses++;
     let t;
     do { t = TAUNTS[Math.floor(Math.random() * TAUNTS.length)]; } while (t === lastTaunt);
     lastTaunt = t;
@@ -287,18 +349,25 @@
 
   /* ---------- Controls ---------- */
   function start() {
-    startTime = performance.now();
+    startTime = runStart = performance.now();
+    runMisses = 0;
     running = true;
+    setMood('fresh');
     tick();
     renderStatus();
   }
-  function stop() {
+  function stop(by) {
+    const r = go.getBoundingClientRect();
     elapsed = now();
     running = false;
+    stoppedBy = by;
+    justCaught = performance.now();
     cancelAnimationFrame(rafId);
+    setMood('fresh');
     render();
     renderStatus();
     goHome();
+    return r;
   }
   function reset() {
     if (running) return;
@@ -308,16 +377,33 @@
     goHome();
   }
 
-  function stopFromKeyboard() {
-    const r = go.getBoundingClientRect();
-    stop();
-    bubble(r.left + 20, r.top, 'Sneaky!', true);
+  // Space (or Enter on the focused button) works the first time only
+  function keyboardStop() {
+    if (!spaceUsed) {
+      spaceUsed = true;
+      const r = stop('key');
+      bubble(r.left + 20, r.top, 'Sneaky!', true);
+      return;
+    }
+    patchedSeen = true;
+    bubbleAtButton(['Patched! \u{1F527}', 'Nice try. That only works once.'][patchLine++ % 2]);
+    renderStatus();
+  }
+
+  // Catching the button for real: only once it has given up
+  function catchIt() {
+    const r = stop('tired');
+    bubble(r.left + 20, r.top, 'Okay, okay… you win!', true);
   }
 
   // Every click while running is a miss; the button itself jumps away before it can be pressed
   document.addEventListener('pointerdown', e => {
     if (!running) return;
-    if (e.target === go) { e.preventDefault(); flee(e.clientX, e.clientY); }
+    if (e.target === go) {
+      e.preventDefault();
+      if (mood === 'exhausted') return catchIt();
+      flee(e.clientX, e.clientY);
+    }
     miss(e.clientX, e.clientY);
   });
 
@@ -331,9 +417,12 @@
   });
 
   go.addEventListener('click', e => {
-    if (!running) return start();
-    // keyboard activation (Enter on the focused button) has no pointer, so it is allowed through
-    if (e.detail === 0) stopFromKeyboard();
+    if (!running) {
+      if (performance.now() - justCaught < 500) return;   // the click that just caught it shouldn't restart it
+      return start();
+    }
+    // keyboard activation (Enter or Space on the focused button) has no pointer
+    if (e.detail === 0) keyboardStop();
   });
   resetBtn.addEventListener('click', reset);
 
@@ -342,7 +431,7 @@
     if (e.code === 'Space') {
       if (e.target.closest('button')) return;   // a focused button handles Space itself, through its click
       e.preventDefault();
-      if (running) stopFromKeyboard(); else start();
+      if (running) keyboardStop(); else start();
     } else if (e.code === 'KeyR') reset();
   });
 
